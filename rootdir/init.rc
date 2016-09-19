@@ -10,8 +10,8 @@ import /init.${ro.hardware}.rc
 import /init.usb.configfs.rc
 import /init.${ro.zygote}.rc
 
-# Include CM's extra init file
-import /init.cm.rc
+# Include MK's extra init file
+import /init.mk.rc
 
 
 on early-init
@@ -681,13 +681,3 @@ on property:ro.debuggable=1
     # The folder is used to store method traces.
     chmod 0773 /data/misc/trace
     start console
-
-service flash_recovery /system/bin/install-recovery.sh
-    class main
-    oneshot
-    disabled
-
-# update recovery if enabled
-on property:persist.sys.recovery_update=true
-    start flash_recovery
-
