@@ -77,6 +77,13 @@ char *locale;
 #define LOGW(x...) do { KLOG_WARNING("charger", x); } while (0)
 #define LOGV(x...) do { KLOG_DEBUG("charger", x); } while (0)
 
+/* if w0 < w1, return a negative number */
+#define GET_CENTER_POS(w0, w1)	(((w0) - (w1)) / 2)
+
+#ifndef CHARGER_CAPACITY_TEXT
+#define CHARGER_CAPACITY_TEXT /* remove it if not want to display capacity */
+#endif
+
 struct key_state {
     bool pending;
     bool down;
@@ -84,11 +91,22 @@ struct key_state {
 };
 
 struct frame {
+    const char *name;
     int disp_time;
     int min_capacity;
     bool level_only;
 
     gr_surface surface;
+};
+
+struct capacity_text {
+   const char *name;
+   int text_count;
+   int width;
+   int height;
+   int cheight;
+
+   gr_surface surface;
 };
 
 struct animation {
@@ -120,36 +138,42 @@ struct charger {
 
 static struct frame batt_anim_frames[] = {
     {
+        .name = "charger/battery_0",
         .disp_time = 750,
         .min_capacity = 0,
         .level_only = false,
         .surface = NULL,
     },
     {
+        .name = "charger/battery_1",
         .disp_time = 750,
         .min_capacity = 20,
         .level_only = false,
         .surface = NULL,
     },
     {
+        .name = "charger/battery_2",
         .disp_time = 750,
         .min_capacity = 40,
         .level_only = false,
         .surface = NULL,
     },
     {
+        .name = "charger/battery_3",
         .disp_time = 750,
         .min_capacity = 60,
         .level_only = false,
         .surface = NULL,
     },
     {
+        .name = "charger/battery_4",
         .disp_time = 750,
         .min_capacity = 80,
         .level_only = true,
         .surface = NULL,
     },
     {
+        .name = "charger/battery_5",
         .disp_time = 750,
         .min_capacity = BATTERY_FULL_THRESH,
         .level_only = false,
@@ -165,6 +189,41 @@ static struct animation battery_animation = {
     .cur_cycle = 0,
     .num_cycles = 3,
     .capacity = 0,
+};
+
+static struct capacity_text batt_cap_text[] = {
+    {
+	.name = "charger/capacity_text_top",
+	.text_count = 11,
+	.width = 18, /* width and height will be update after load resource */
+	.height = 352,
+	.cheight = 32,
+	.surface = NULL,
+    },
+    {
+	.name = "charger/capacity_text_bottom",
+	.text_count = 11,
+	.width = 18, /* width and height will be update after load resource */
+	.height = 352,
+	.cheight = 32,
+	.surface = NULL,
+    },
+    {
+	.name = "charger/capacity_text_right",
+	.text_count = 11,
+	.width = 32, /* width and height will be update after load resource */
+	.height = 198,
+	.cheight = 18,
+	.surface = NULL,
+    },
+    {
+	.name = "charger/capacity_text_left",
+	.text_count = 11,
+	.width = 32, /* width and height will be update after load resource */
+	.height = 198,
+	.cheight = 18,
+	.surface = NULL,
+    },
 };
 
 static struct charger charger_state;
@@ -254,6 +313,11 @@ static int request_suspend(bool /*enable*/)
 }
 #endif
 
+static bool outside(int x, int y)
+{
+    return x < 0 || x >= gr_fb_width() || y < 0 || y >= gr_fb_height();
+}
+
 static int draw_text(const char *str, int x, int y)
 {
     int str_len_px = gr_measure(str);
@@ -262,7 +326,7 @@ static int draw_text(const char *str, int x, int y)
         x = (gr_fb_width() - str_len_px) / 2;
     if (y < 0)
         y = (gr_fb_height() - char_height) / 2;
-    gr_text(x, y, str, 0);
+    gr_text(x, y, str, 1);
 
     return y + char_height;
 }
@@ -272,8 +336,159 @@ static void android_green(void)
     gr_color(0xa4, 0xc6, 0x39, 255);
 }
 
+#ifdef CHARGER_CAPACITY_TEXT
+
+#ifdef CHARGER_CAPACITY_TEXT_USE_FONT
+#define SPACING 10
+static int draw_charger_capacity(struct charger *charger,
+				 int x, int y, int w, int h)
+{
+    int clen;
+    int font_w;
+    char str[20] = {0};
+    struct animation *batt_anim = charger->batt_anim;
+
+    clen = snprintf(str, sizeof(str) - 1, "%d%%", batt_anim->capacity);
+    font_w = clen * gr_get_font_cwidth();
+    x += GET_CENTER_POS(w, font_w);
+
+    gr_color(255, 255, 255, 255);
+    LOGV("drawing capacity %s xpos=%d ypos=%d\n", str, x, y);
+    return draw_text(str, x, y) + SPACING;
+}
+#else	/* default use images */
+#define SPACING 20
+static int draw_charger_capacity(struct charger *charger,
+				 int x, int y, int w, int h)
+{
+    int c_w;
+    int c_h;
+    int c_x;
+    int c_y;
+    int clen;
+    int i;
+    int index[4] = {0};
+    struct animation *batt_anim = charger->batt_anim;
+    int capacity = batt_anim->capacity;
+    struct capacity_text *cap_text;
+
+    if (capacity == 100) {
+	index[0] = 1;
+	index[1] = 0;
+	index[2] = 0;
+	index[3] = 10; /* '%' */
+	clen = 4;
+    } else if (capacity > 9) {
+	index[0] = capacity / 10;
+	index[1] = capacity % 10;
+	index[2] = 10;
+	clen = 3;
+    } else {
+	index[0] = capacity % 10;
+	index[1] = 10;
+	clen = 2;
+    }
+
+    if (w <= h) {
+#ifdef CHARGER_CAPACITY_TEXT_ROTATE_180 /* on the bottom */
+	cap_text = &batt_cap_text[1];
+	if (!cap_text->surface)
+	    return y;
+
+	c_w = cap_text->width;
+	c_h = cap_text->cheight;
+	c_x = x + GET_CENTER_POS(w, c_w * clen);
+	c_y = GET_CENTER_POS(gr_fb_height(), h + c_h + SPACING) + h + SPACING;
+
+	if (outside(c_x, c_y) || outside(c_x + c_w * clen, c_y + c_h)) {
+	    LOGE("drawing outside %dx%d+%d+%d\n", c_x, c_y, c_w * clen, c_h);
+	    return y;
+	}
+
+	for (i = clen - 1; i >= 0; i--) {
+	    LOGV("drawing text %d,%dx%d+%d+%d\n", index[i], c_w, c_h, c_x, c_y);
+	    gr_blit(cap_text->surface, 0, c_h * index[i], c_w, c_h, c_x, c_y);
+	    c_x += c_w;
+	}
+
+	return c_y - h - SPACING;
+#else /* default on the top */
+	cap_text = &batt_cap_text[0];
+	if (!cap_text->surface)
+	    return y;
+
+	c_w = cap_text->width;
+	c_h = cap_text->cheight;
+	c_x = x + GET_CENTER_POS(w, c_w * clen);
+	c_y = GET_CENTER_POS(gr_fb_height(), h + c_h + SPACING);
+
+	if (outside(c_x, c_y) || outside(c_x + c_w * clen, c_y + c_h)) {
+	    LOGE("drawing outside %dx%d+%d+%d\n", c_x, c_y, c_w * clen, c_h);
+	    return y;
+	}
+
+	for (i = 0; i < clen; i++) {
+	    LOGV("drawing text %d,%dx%d+%d+%d\n", index[i], c_w, c_h, c_x, c_y);
+	    gr_blit(cap_text->surface, 0, c_h * index[i], c_w, c_h, c_x, c_y);
+	    c_x += c_w;
+	}
+
+	return c_y + c_h + SPACING;
+#endif
+    } else {
+#ifdef CHARGER_CAPACITY_TEXT_ROTATE_180 /* on the left */
+	cap_text = &batt_cap_text[3];
+	if (!cap_text->surface)
+	    return x;
+
+	c_w = cap_text->width;
+	c_h = cap_text->cheight;
+	c_x = GET_CENTER_POS(gr_fb_width(), w + c_w + SPACING);
+	c_y = y + GET_CENTER_POS(h, c_h * clen);
+
+	if (outside(c_x, c_y) || outside(c_x + c_w, c_y + c_h * clen)) {
+	    LOGE("drawing outside %dx%d+%d+%d\n", c_x, c_y, c_w, c_h * clen);
+	    return x;
+	}
+
+	for (i = clen - 1; i >= 0; i--) {
+	    LOGV("drawing text %d,%dx%d+%d+%d\n", index[i], c_w, c_h, c_x, c_y);
+	    gr_blit(cap_text->surface, 0, c_h * index[i], c_w, c_h, c_x, c_y);
+	    c_y += c_h;
+	}
+
+	return c_x + c_w + SPACING;
+#else /* the capacity text display on the right of charging icon by default */
+	cap_text = &batt_cap_text[2];
+	if (!cap_text->surface)
+	    return x;
+
+	c_w = cap_text->width;
+	c_h = cap_text->cheight;
+	c_x = GET_CENTER_POS(gr_fb_width(), w + c_w + SPACING) + w + SPACING;
+	c_y = y + GET_CENTER_POS(h, c_h * clen);
+
+	if (outside(c_x, c_y) || outside (c_x + c_w, c_y + c_h * clen)) {
+	    LOGE("drawing outside %dx%d+%d+%d\n", c_x, c_y, c_w, c_h * clen);
+	    return x;
+	}
+
+	for (i = 0; i < clen; i++) {
+	    LOGV("drawing text %d,%dx%d+%d+%d\n", index[i], c_w, c_h, c_x, c_y);
+	    gr_blit(cap_text->surface, 0, c_h * index[i], c_w, c_h, c_x, c_y);
+	    c_y += c_h;
+	}
+
+	return c_x - w - SPACING;
+#endif
+    }
+}
+#endif
+
+#endif
+
 /* returns the last y-offset of where the surface ends */
-static int draw_surface_centered(struct charger* /*charger*/, gr_surface surface)
+static int draw_surface_centered(struct charger *charger, gr_surface surface)
 {
     int w;
     int h;
@@ -284,6 +499,14 @@ static int draw_surface_centered(struct charger* /*charger*/, gr_surface surface
     h = gr_get_height(surface);
     x = (gr_fb_width() - w) / 2 ;
     y = (gr_fb_height() - h) / 2 ;
+
+#ifdef CHARGER_CAPACITY_TEXT
+    /* drawing capacity text */
+    if (w <= h)
+	y = draw_charger_capacity(charger, x, y, w, h);
+    else /* capacity text display on the right of battery icon */
+	x = draw_charger_capacity(charger, x, y, w, h);
+#endif
 
     LOGV("drawing surface %dx%d+%d+%d\n", w, h, x, y);
     gr_blit(surface, 0, 0, w, h, x, y);
@@ -309,8 +532,8 @@ static void draw_battery(struct charger *charger)
 
     if (batt_anim->num_frames != 0) {
         draw_surface_centered(charger, frame->surface);
-        LOGV("drawing frame #%d min_cap=%d time=%d\n",
-             batt_anim->cur_frame, frame->min_capacity,
+        LOGV("drawing frame #%d name=%s min_cap=%d time=%d\n",
+             batt_anim->cur_frame, frame->name, frame->min_capacity,
              frame->disp_time);
     }
 }
@@ -687,23 +910,35 @@ void healthd_mode_charger_init(struct healthd_config* config)
 
     charger->batt_anim = &battery_animation;
 
-    gr_surface* scale_frames;
-    int scale_count;
-    ret = res_create_multi_display_surface("charger/battery_scale", &scale_count, &scale_frames);
-    if (ret < 0) {
-        LOGE("Cannot load battery_scale image\n");
-        charger->batt_anim->num_frames = 0;
-        charger->batt_anim->num_cycles = 1;
-    } else if (scale_count != charger->batt_anim->num_frames) {
-        LOGE("battery_scale image has unexpected frame count (%d, expected %d)\n",
-             scale_count, charger->batt_anim->num_frames);
-        charger->batt_anim->num_frames = 0;
-        charger->batt_anim->num_cycles = 1;
-    } else {
-        for (i = 0; i < charger->batt_anim->num_frames; i++) {
-            charger->batt_anim->frames[i].surface = scale_frames[i];
+    for (i = 0; i < charger->batt_anim->num_frames; i++) {
+        struct frame *frame = &charger->batt_anim->frames[i];
+
+        ret = res_create_display_surface(frame->name, &frame->surface);
+        if (ret < 0) {
+            LOGE("Cannot load image %s\n", frame->name);
+            /* TODO: free the already allocated surfaces... */
+            charger->batt_anim->num_frames = 0;
+            charger->batt_anim->num_cycles = 1;
+            break;
         }
     }
+
+#ifdef CHARGER_CAPACITY_TEXT
+    for (i = 0; i < 4; i++) {
+	struct capacity_text *cap_text = &batt_cap_text[i];
+
+	ret = res_create_display_surface(cap_text->name, &cap_text->surface);
+	if (ret < 0) {
+	    LOGE("Cannot load image %s\n", cap_text->name);
+	    cap_text->surface = NULL;
+	    break;
+	}
+	cap_text->width = gr_get_width(cap_text->surface);
+	cap_text->height = gr_get_height(cap_text->surface);
+	if (cap_text->text_count > 0)
+	    cap_text->cheight = cap_text->height / cap_text->text_count;
+    }
+#endif
 
     ev_sync_key_state(set_key_callback, charger);
 

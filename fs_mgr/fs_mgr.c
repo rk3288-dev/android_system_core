@@ -40,15 +40,19 @@
 #include "mincrypt/sha.h"
 #include "mincrypt/sha256.h"
 
+#include "ext4_utils.h"
+#include "wipe.h"
+
 #include "fs_mgr_priv.h"
 #include "fs_mgr_priv_verity.h"
 
 #define KEY_LOC_PROP   "ro.crypto.keyfile.userdata"
 #define KEY_IN_FOOTER  "footer"
 
-#define E2FSCK_BIN      "/system/bin/e2fsck"
+#define E2FSCK_BIN      "/sbin/e2fsck"
 #define F2FS_FSCK_BIN  "/system/bin/fsck.f2fs"
 #define MKSWAP_BIN      "/system/bin/mkswap"
+#define RESIZE2FS_BIN   "/sbin/resize2fs"
 
 #define FSCK_LOG_FILE   "/dev/fscklogs/log"
 
@@ -84,6 +88,35 @@ static int wait_for_file(const char *filename, int timeout)
         usleep(10000);
 
     return ret;
+}
+
+static void resize_fs(char *blk_device, char *fs_type)
+{
+    pid_t pid;
+    int status;
+    int err;
+    char *resize2fs_argv[3] = {
+        RESIZE2FS_BIN,
+        blk_device,
+        NULL
+    };
+
+    if (!strcmp(fs_type, "ext2") || !strcmp(fs_type, "ext3") || !strcmp(fs_type, "ext4")) {
+        if (access(RESIZE2FS_BIN, X_OK)) {
+            INFO("Not running %s on %s (executable not in system image)\n",
+                 RESIZE2FS_BIN, blk_device);
+        } else {
+            INFO("Running %s on %s\n", RESIZE2FS_BIN, blk_device);
+            err = android_fork_execvp_ext(ARRAY_SIZE(resize2fs_argv), resize2fs_argv,
+                                      &status, true, LOG_KLOG, false, NULL);
+            if (err < 0) {
+                /* No need to check for error in fork, we can't really handle it now */
+                ERROR("Failed trying to run %s\n", RESIZE2FS_BIN);
+            }
+        }
+    }
+
+    return;
 }
 
 static void check_fs(char *blk_device, char *fs_type, char *target)
@@ -370,6 +403,10 @@ int fs_mgr_mount_all(struct fstab *fstab)
             wait_for_file(fstab->recs[i].blk_device, WAIT_TIMEOUT);
         }
 
+        if (fstab->recs[i].fs_mgr_flags & MF_RESIZE) {
+            resize_fs(fstab->recs[i].blk_device, fstab->recs[i].fs_type);
+        }
+
         if ((fstab->recs[i].fs_mgr_flags & MF_VERIFY) && device_is_secure()) {
             int rc = fs_mgr_setup_verity(&fstab->recs[i]);
             if (device_is_debuggable() && rc == FS_MGR_SETUP_VERITY_DISABLED) {
@@ -380,6 +417,8 @@ int fs_mgr_mount_all(struct fstab *fstab)
             }
         }
         int last_idx_inspected;
+        int top_idx = i;
+
         mret = mount_with_alternatives(fstab, i, &last_idx_inspected, &attempted_idx);
         i = last_idx_inspected;
         mount_errno = errno;
@@ -409,10 +448,38 @@ int fs_mgr_mount_all(struct fstab *fstab)
             continue;
         }
 
-        /* mount(2) returned an error, check if it's encryptable and deal with it */
+        /* mount(2) returned an error, handle the encryptable/formattable case */
+        bool wiped = partition_wiped(fstab->recs[top_idx].blk_device);
+        if (mret && mount_errno != EBUSY && mount_errno != EACCES &&
+            fs_mgr_is_formattable(&fstab->recs[top_idx]) && wiped) {
+            /* top_idx and attempted_idx point at the same partition, but sometimes
+             * at two different lines in the fstab.  Use the top one for formatting
+             * as that is the preferred one.
+             */
+            ERROR("%s(): %s is wiped and %s %s is formattable. Format it.\n", __func__,
+                  fstab->recs[top_idx].blk_device, fstab->recs[top_idx].mount_point,
+                  fstab->recs[top_idx].fs_type);
+            if (fs_mgr_is_encryptable(&fstab->recs[top_idx]) &&
+                strcmp(fstab->recs[top_idx].key_loc, KEY_IN_FOOTER)) {
+                int fd = open(fstab->recs[top_idx].key_loc, O_WRONLY, 0644);
+                if (fd >= 0) {
+                    INFO("%s(): also wipe %s\n", __func__, fstab->recs[top_idx].key_loc);
+                    wipe_block_device(fd, get_file_size(fd));
+                    close(fd);
+                } else {
+                    ERROR("%s(): %s wouldn't open (%s)\n", __func__,
+                          fstab->recs[top_idx].key_loc, strerror(errno));
+                }
+            }
+            if (fs_mgr_do_format(&fstab->recs[top_idx]) == 0) {
+                /* Let's replay the mount actions. */
+                i = top_idx - 1;
+                continue;
+            }
+        }
         if (mret && mount_errno != EBUSY && mount_errno != EACCES &&
             fs_mgr_is_encryptable(&fstab->recs[attempted_idx])) {
-            if(partition_wiped(fstab->recs[attempted_idx].blk_device)) {
+            if (wiped) {
                 ERROR("%s(): %s is wiped and %s %s is encryptable. Suggest recovery...\n", __func__,
                       fstab->recs[attempted_idx].blk_device, fstab->recs[attempted_idx].mount_point,
                       fstab->recs[attempted_idx].fs_type);
@@ -484,6 +551,10 @@ int fs_mgr_do_mount(struct fstab *fstab, char *n_name, char *n_blk_device,
         /* First check the filesystem if requested */
         if (fstab->recs[i].fs_mgr_flags & MF_WAIT) {
             wait_for_file(n_blk_device, WAIT_TIMEOUT);
+        }
+
+        if (fstab->recs[i].fs_mgr_flags & MF_RESIZE) {
+            resize_fs(fstab->recs[i].blk_device, fstab->recs[i].fs_type);
         }
 
         if (fstab->recs[i].fs_mgr_flags & MF_CHECK) {

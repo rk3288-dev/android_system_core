@@ -58,6 +58,7 @@ static struct flag_list mount_flags[] = {
 static struct flag_list fs_mgr_flags[] = {
     { "wait",        MF_WAIT },
     { "check",       MF_CHECK },
+    { "resize",      MF_RESIZE },
     { "encryptable=",MF_CRYPT },
     { "forceencrypt=",MF_FORCECRYPT },
     { "nonremovable",MF_NONREMOVABLE },
@@ -68,6 +69,7 @@ static struct flag_list fs_mgr_flags[] = {
     { "zramsize=",   MF_ZRAMSIZE },
     { "verify",      MF_VERIFY },
     { "noemulatedsd", MF_NOEMULATEDSD },
+    { "formattable", MF_FORMATTABLE },
     { "defaults",    0 },
     { 0,             0 },
 };
@@ -431,4 +433,9 @@ int fs_mgr_is_encryptable(struct fstab_rec *fstab)
 int fs_mgr_is_noemulatedsd(struct fstab_rec *fstab)
 {
     return fstab->fs_mgr_flags & MF_NOEMULATEDSD;
+}
+
+int fs_mgr_is_formattable(struct fstab_rec *fstab)
+{
+    return fstab->fs_mgr_flags & (MF_FORMATTABLE);
 }

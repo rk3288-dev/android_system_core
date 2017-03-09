@@ -518,10 +518,10 @@ static char **get_block_device_symlinks(struct uevent *uevent)
         return NULL;
     }
 
-    char **links = malloc(sizeof(char *) * 4);
+    char **links = malloc(sizeof(char *) * 5);
     if (!links)
         return NULL;
-    memset(links, 0, sizeof(char *) * 4);
+    memset(links, 0, sizeof(char *) * 5);
 
     INFO("found %s device %s\n", type, device);
 
@@ -536,6 +536,12 @@ static char **get_block_device_symlinks(struct uevent *uevent)
             link_num++;
         else
             links[link_num] = NULL;
+
+        if (asprintf(&links[link_num], "/dev/block/mtd/by-name/%s", p) > 0)
+            link_num++;
+        else
+            links[link_num] = NULL;
+
         free(p);
     }
 
@@ -555,6 +561,34 @@ static char **get_block_device_symlinks(struct uevent *uevent)
     return links;
 }
 
+static char **parse_mtd_block_device(struct uevent *uevent)
+{
+    const char *partition_name;
+    char *p;
+
+    char **links = malloc(sizeof(char *) * 2);
+    if (!links)
+        return NULL;
+    memset(links, 0, sizeof(char *) * 2);
+
+    partition_name = uevent->partition_name;
+    if (!partition_name)
+        goto err;
+
+    p = strdup(partition_name);
+    if (!p)
+        goto err;
+    sanitize(p);
+    asprintf(&links[0], "/dev/block/mtd/by-name/%s", p);
+    free(p);
+
+    return links;
+
+err:
+    free(links);
+    return NULL;
+}
+
 static void handle_device(const char *action, const char *devpath,
         const char *path, int block, int major, int minor, char **links)
 {
@@ -564,7 +598,7 @@ static void handle_device(const char *action, const char *devpath,
         make_device(devpath, path, block, major, minor, (const char **)links);
         if (links) {
             for (i = 0; links[i]; i++)
-                make_link(devpath, links[i]);
+                make_link_init(devpath, links[i]);
         }
     }
 
@@ -631,7 +665,9 @@ static void handle_block_device_event(struct uevent *uevent)
     snprintf(devpath, sizeof(devpath), "%s%s", base, name);
     make_dir(base, 0755);
 
-    if (!strncmp(uevent->path, "/devices/", 9))
+    if (strstr(uevent->path, "/mtdblock"))
+        links = parse_mtd_block_device(uevent);
+    else if (!strncmp(uevent->path, "/devices/", 9))
         links = get_block_device_symlinks(uevent);
 
     handle_device(uevent->action, devpath, uevent->path, 1,

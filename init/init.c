@@ -739,6 +739,59 @@ static void import_kernel_nv(char *name, int for_emulator)
     }
 }
 
+static void symlink_fstab()
+{
+    char fstab_path[255] = "/fstab.";
+    char fstab_default_path[50] = "/fstab.";
+    int ret = -1;
+
+    // fstab.rk30board.bootmode.unknown
+    strcat(fstab_path, hardware);
+    strcat(fstab_path, ".bootmode.");
+    strcat(fstab_path, bootmode);
+
+    strcat(fstab_default_path, hardware);
+
+    ret = symlink(fstab_path, fstab_default_path);
+    if (ret < 0) {
+        ERROR("%s : failed", __func__);
+    }
+}
+
+static void sysmlink_nand_emmc_fstab()
+{
+    char fstab_path[255] = "/fstab.";
+    char fstab_default_path[50] = "/fstab.";
+    char recovery_fstab_path[255] = "/etc/recovery.fstab";
+    char recovery_fstab_default_path[50] = "/etc/recovery.fstab";
+    int ret = -1;
+
+    strcat(fstab_path, hardware);
+
+    strcat(fstab_default_path, hardware);
+    FILE *fp;
+    if (!(fp = fopen("/proc/nand", "r"))) {
+        strcat(fstab_path,"_emmc");
+        strcat(recovery_fstab_path,"_emmc");
+    }else{
+        strcat(fstab_path,"_nand");
+        strcat(recovery_fstab_path,"_nand");
+    }
+
+
+    ret = symlink(fstab_path, fstab_default_path);
+    if (ret < 0) {
+	ERROR("%s : failed", __func__);
+    }
+
+#ifdef TARGET_BOARD_PLATFORM_SOFIA3GR
+    ret = symlink(recovery_fstab_path, recovery_fstab_default_path);
+    if (ret < 0) {
+	ERROR("%s : failed", __func__);
+    }
+#endif
+
+}
 static void export_kernel_boot_props(void)
 {
     char tmp[PROP_VALUE_MAX];
@@ -749,7 +802,9 @@ static void export_kernel_boot_props(void)
         const char *dest_prop;
         const char *def_val;
     } prop_map[] = {
+#ifdef TARGET_BOARD_PLATFORM_SOFIA3GR
         { "ro.boot.serialno", "ro.serialno", "", },
+#endif
         { "ro.boot.mode", "ro.bootmode", "unknown", },
         { "ro.boot.baseband", "ro.baseband", "unknown", },
         { "ro.boot.bootloader", "ro.bootloader", "unknown", },
@@ -788,6 +843,10 @@ static void export_kernel_boot_props(void)
         property_set("ro.factorytest", "2");
     else
         property_set("ro.factorytest", "0");
+    #ifdef NAND_EMMC
+    sysmlink_nand_emmc_fstab();
+    #endif
+    symlink_fstab();
 }
 
 static void process_kernel_cmdline(void)
@@ -986,16 +1045,201 @@ static void selinux_initialize(void)
     }
 
     INFO("loading selinux policy\n");
+#ifdef USER_PTEST
+   if(!strcmp(bootmode, "ptest")){
+
+	if (selinux_android_load_policy_rk(3) < 0) {
+        	ERROR("SELinux: Failed to load policy; rebooting into recovery mode\n");
+        	android_reboot(ANDROID_RB_RESTART2, 0, "recovery");
+        	while (1) { pause(); }  // never reached
+   	 }
+
+
+    }else{
+
+    	if (selinux_android_load_policy() < 0) {
+        	ERROR("SELinux: Failed to load policy; rebooting into recovery mode\n");
+        	android_reboot(ANDROID_RB_RESTART2, 0, "recovery");
+       		 while (1) { pause(); }  // never reached
+   	 }
+    }
+#else
+
     if (selinux_android_load_policy() < 0) {
-        ERROR("SELinux: Failed to load policy; rebooting into recovery mode\n");
+	ERROR("SELinux: Failed to load policy; rebooting into recovery mode\n");
         android_reboot(ANDROID_RB_RESTART2, 0, "recovery");
         while (1) { pause(); }  // never reached
-    }
+     }
 
+
+#endif
     selinux_init_all_handles();
     bool is_enforcing = selinux_is_enforcing();
     INFO("SELinux: security_setenforce(%d)\n", is_enforcing);
     security_setenforce(is_enforcing);
+}
+
+static void rk_312x_set_cpu(void)
+{
+    int fd;
+    char buf[128];
+    char value[16]={"1200000"};
+    char min_freq[16]={"126000"};//126M
+    bool can_set_cpu = false;
+
+    fd = open("/sys/devices/system/cpu/cpu0/cpufreq/scaling_available_frequencies",O_RDONLY);
+
+    if (fd >= 0) {
+        int n = read(fd, buf, sizeof(buf) - 1);
+        if (n > 0) {
+            buf[n-1] = '\0';
+            //check whether 1.2G in the freqs table
+            if(strstr(buf,value)){
+                can_set_cpu = true;
+            }
+            // ERROR("available_frequencies %s \n",buf);
+        }
+        close(fd);
+    }else{
+        ERROR("error to open scaling_available_frequencies");
+    }
+
+
+    //first set write permission to root
+    chmod("/sys/devices/system/cpu/cpu0/cpufreq/scaling_min_freq", 0644);
+    fd = open("/sys/devices/system/cpu/cpu0/cpufreq/scaling_min_freq",O_RDWR);
+    if (fd >= 0) {
+        read(fd, min_freq, sizeof(min_freq) - 1);
+        if(can_set_cpu){
+            write(fd, value, strlen(value));
+        }//if(can_set_cpu)
+        close(fd);
+    }//if (fd >= 0)
+
+    property_set("ro.rk.cpu_min_freq", min_freq);
+}
+
+
+static void rk_3288_set_cpu(void)
+{
+    int fd;
+    char buf[128];
+    char value[16]={"1416000"};
+    char min_freq[16]={"126000"};//126M
+    bool can_set_cpu = false;
+
+    fd = open("/sys/devices/system/cpu/cpu0/cpufreq/scaling_available_frequencies",O_RDONLY);
+
+    if (fd >= 0) {
+        int n = read(fd, buf, sizeof(buf) - 1);
+        if (n > 0) {
+            buf[n-1] = '\0';
+            //check whether 1.4G in the freqs table
+            if(strstr(buf,value)){
+                can_set_cpu = true;
+            }
+            // ERROR("available_frequencies %s \n",buf);
+        }
+        close(fd);
+    }else{
+        ERROR("error to open scaling_available_frequencies");
+    }
+
+
+    //first set write permission to root
+    chmod("/sys/devices/system/cpu/cpu0/cpufreq/scaling_min_freq", 0644);
+    fd = open("/sys/devices/system/cpu/cpu0/cpufreq/scaling_min_freq",O_RDWR);
+    if (fd >= 0) {
+        read(fd, min_freq, sizeof(min_freq) - 1);
+        if(can_set_cpu){
+            write(fd, value, strlen(value));
+        }//if(can_set_cpu)
+        close(fd);
+    }//if (fd >= 0)
+
+    property_set("ro.rk.cpu_min_freq", min_freq);
+}
+
+static void rk_3368_set_cpu(void)
+{
+    int fd;
+    char buf[128];
+    char value[16]={"1200000"};
+    char min_freq[16]={"126000"};//126M
+    bool can_set_cpu = false;
+
+    fd = open("/sys/devices/system/cpu/cpu0/cpufreq/scaling_available_frequencies",O_RDONLY);
+
+    if (fd >= 0) {
+        int n = read(fd, buf, sizeof(buf) - 1);
+        if (n > 0) {
+            buf[n-1] = '\0';
+            //check whether 1.2G in the freqs table
+            if(strstr(buf,value)){
+                can_set_cpu = true;
+            }
+            // ERROR("available_frequencies %s \n",buf);
+        }
+        close(fd);
+    }else{
+        ERROR("error to open scaling_available_frequencies");
+    }
+
+
+    //first set write permission to root
+    chmod("/sys/devices/system/cpu/cpu0/cpufreq/scaling_min_freq", 0644);
+    fd = open("/sys/devices/system/cpu/cpu0/cpufreq/scaling_min_freq",O_RDWR);
+    if (fd >= 0) {
+        read(fd, min_freq, sizeof(min_freq) - 1);
+        if(can_set_cpu){
+            write(fd, value, strlen(value));
+        }//if(can_set_cpu)
+        close(fd);
+    }//if (fd >= 0)
+
+    //set big core
+    chmod("/sys/devices/system/cpu/cpu4/cpufreq/scaling_min_freq", 0644);
+    fd = open("/sys/devices/system/cpu/cpu4/cpufreq/scaling_min_freq",O_RDWR);
+    if (fd >= 0) {
+        read(fd, min_freq, sizeof(min_freq) - 1);
+        if(can_set_cpu){
+            write(fd, value, strlen(value));
+        }//if(can_set_cpu)
+        close(fd);
+    }//if (fd >= 0)
+
+    property_set("ro.rk.cpu_min_freq", min_freq);
+}
+
+
+static void rk_parse_cpu(void)
+{
+    int fd;
+    char buf[64];
+
+    fd = open("/sys/devices/system/cpu/type", O_RDONLY);
+    if (fd >= 0) {
+        int n = read(fd, buf, sizeof(buf) - 1);
+        if (n > 0) {
+            if (buf[n-1] == '\n')
+                n--;
+            buf[n] = 0;
+            property_set("ro.rk.cpu", buf);
+        }
+        close(fd);
+    }
+
+    fd = open("/sys/devices/system/cpu/soc", O_RDONLY);
+    if (fd >= 0) {
+        int n = read(fd, buf, sizeof(buf) - 1);
+        if (n > 0) {
+            if (buf[n-1] == '\n')
+                n--;
+            buf[n] = 0;
+            property_set("ro.rk.soc", buf);
+        }
+        close(fd);
+    }
 }
 
 int main(int argc, char **argv)
@@ -1046,6 +1290,17 @@ int main(int argc, char **argv)
     open_devnull_stdio();
     klog_init();
     property_init();
+#ifdef TARGET_BOARD_PLATFORM_RK3288
+    rk_3288_set_cpu();
+#else
+#ifdef TARGET_BOARD_PLATFORM_RK3368
+    rk_3368_set_cpu();
+#endif
+#ifdef TARGET_BOARD_PLATFORM_RK312x
+    rk_312x_set_cpu();
+#endif
+#endif
+    rk_parse_cpu();
 
     get_hardware_name(hardware, &revision);
 
@@ -1074,7 +1329,10 @@ int main(int argc, char **argv)
     property_load_boot_defaults();
 
     INFO("reading config file\n");
-    init_parse_config_file("/init.rc");
+    if(!strcmp(bootmode, "ptest"))
+	init_parse_config_file("/init.ptest.rc");
+    else
+	init_parse_config_file("/init.rc");
 
     action_for_each_trigger("early-init", action_add_queue_tail);
 

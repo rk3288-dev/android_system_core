@@ -23,6 +23,7 @@
 #include <errno.h>
 
 #include "mincrypt/sha.h"
+#include "mincrypt/sha256.h"
 #include "bootimg.h"
 
 static void *load_file(const char *fn, unsigned *_sz)
@@ -105,9 +106,14 @@ int main(int argc, char **argv)
     char *cmdline = "";
     char *bootimg = 0;
     char *board = "";
+#if TARGET_ROCKCHIP_RECOVERY == true
+    unsigned pagesize = 16384;
+#else
     unsigned pagesize = 2048;
+#endif
     int fd;
     SHA_CTX ctx;
+    SHA256_CTX ctx256;
     const uint8_t* sha;
     unsigned base           = 0x10000000;
     unsigned kernel_offset  = 0x00008000;
@@ -120,6 +126,13 @@ int main(int argc, char **argv)
     argv++;
 
     memset(&hdr, 0, sizeof(hdr));
+
+#if TARGET_ROCKCHIP_RECOVERY == true
+    base           = 0x60000000;
+    kernel_offset  = 0x00408000;
+    ramdisk_offset = 0x02000000;
+    tags_offset    = 0x00088000;
+#endif
 
     while(argc > 0){
         char *arg = argv[0];
@@ -242,9 +255,35 @@ int main(int argc, char **argv)
     SHA_update(&ctx, &hdr.ramdisk_size, sizeof(hdr.ramdisk_size));
     SHA_update(&ctx, second_data, hdr.second_size);
     SHA_update(&ctx, &hdr.second_size, sizeof(hdr.second_size));
+#if TARGET_ROCKCHIP_RECOVERY == true
+    SHA_update(&ctx, &hdr.tags_addr, sizeof(hdr.tags_addr));
+    SHA_update(&ctx, &hdr.page_size, sizeof(hdr.page_size));
+    SHA_update(&ctx, &hdr.unused, sizeof(hdr.unused));
+    SHA_update(&ctx, &hdr.name, sizeof(hdr.name));
+    SHA_update(&ctx, &hdr.cmdline, sizeof(hdr.cmdline));
+#endif
     sha = SHA_final(&ctx);
     memcpy(hdr.id, sha,
            SHA_DIGEST_SIZE > sizeof(hdr.id) ? sizeof(hdr.id) : SHA_DIGEST_SIZE);
+
+    hdr.sha_ext_flag = 256;
+    SHA256_init(&ctx256);
+    SHA256_update(&ctx256, kernel_data, hdr.kernel_size);
+    SHA256_update(&ctx256, &hdr.kernel_size, sizeof(hdr.kernel_size));
+    SHA256_update(&ctx256, ramdisk_data, hdr.ramdisk_size);
+    SHA256_update(&ctx256, &hdr.ramdisk_size, sizeof(hdr.ramdisk_size));
+    SHA256_update(&ctx256, second_data, hdr.second_size);
+    SHA256_update(&ctx256, &hdr.second_size, sizeof(hdr.second_size));
+#if TARGET_ROCKCHIP_RECOVERY == true
+    SHA256_update(&ctx256, &hdr.tags_addr, sizeof(hdr.tags_addr));
+    SHA256_update(&ctx256, &hdr.page_size, sizeof(hdr.page_size));
+    SHA256_update(&ctx256, &hdr.unused, sizeof(hdr.unused));
+    SHA256_update(&ctx256, &hdr.name, sizeof(hdr.name));
+    SHA256_update(&ctx256, &hdr.cmdline, sizeof(hdr.cmdline));
+#endif
+    sha = SHA256_final(&ctx256);
+    memcpy(hdr.sha_ext, sha,
+        SHA256_DIGEST_SIZE > sizeof(hdr.sha_ext) ? sizeof(hdr.sha_ext) : SHA256_DIGEST_SIZE);
 
     fd = open(bootimg, O_CREAT | O_TRUNC | O_WRONLY, 0644);
     if(fd < 0) {

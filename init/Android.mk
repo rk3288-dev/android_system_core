@@ -31,6 +31,25 @@ endif
 # Enable ueventd logging
 #LOCAL_CFLAGS += -DLOG_UEVENTS=1
 
+ifeq ($(strip $(TARGET_BOARD_PLATFORM)), rk3288)
+LOCAL_CFLAGS += -DTARGET_BOARD_PLATFORM_RK3288
+endif
+ifeq ($(strip $(TARGET_BOARD_PLATFORM)), sofia3gr)
+LOCAL_CFLAGS += -DTARGET_BOARD_PLATFORM_SOFIA3GR
+endif
+ifeq ($(strip $(TARGET_BOARD_PLATFORM)), rk3368)
+LOCAL_CFLAGS += -DTARGET_BOARD_PLATFORM_RK3368
+endif
+ifeq ($(strip $(TARGET_BOARD_PLATFORM)), rk312x)
+LOCAL_CFLAGS += -DTARGET_BOARD_PLATFORM_RK312x
+endif
+
+ifeq ($(BUILD_WITH_NAND_EMMC),true)
+LOCAL_CFLAGS += -DNAND_EMMC
+endif
+ifeq ($(strip $(BUILD_WITH_USER_PTEST)),true)
+LOCAL_CFLAGS += -DUSER_PTEST
+endif
 LOCAL_MODULE:= init
 
 LOCAL_FORCE_STATIC_EXECUTABLE := true
@@ -45,7 +64,9 @@ LOCAL_STATIC_LIBRARIES := \
 	libc \
 	libselinux \
 	libmincrypt \
-	libext4_utils_static
+	libext4_utils_static \
+	libsparse_static \
+	libz
 
 LOCAL_ADDITIONAL_DEPENDENCIES += $(LOCAL_PATH)/Android.mk
 
